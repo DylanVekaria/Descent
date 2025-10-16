@@ -29,6 +29,8 @@ Descent is a top-down 2D roguelite focused on deep build permutations and rapid-
    python -m descent
    ```
 
+   The repository includes a lightweight compatibility shim so `python -m descent` works even when running the source tree directly (no editable install required).
+
 ## Controls
 
 | Input | Action |
@@ -69,6 +71,10 @@ src/descent/
 ├── relic_data.py           # Relic definitions for the in-run meta layer
 ├── weapon.py               # Weapon runtime logic and cooldown handling
 └── weapon_data.py          # Procedural weapon catalog generation (216 variants)
+
+descent/
+├── __init__.py             # Compatibility shim so `python -m descent` works from the repo root
+└── __main__.py             # Module entry point that dispatches to `descent.main`
 ```
 
 Additional design documentation remains in the `docs/` directory for reference and future iteration.
