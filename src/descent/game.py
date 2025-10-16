@@ -9,9 +9,17 @@ import pygame
 
 from .art import player_sprite
 from .character_data import CHARACTERS, CharacterProfile
-from .constants import RUN_COLORS, SCREEN_HEIGHT, SCREEN_WIDTH, TARGET_FPS
+from .constants import (
+    COLOR_PALETTES,
+    DIFFICULTY_PRESETS,
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    TARGET_FPS,
+    get_palette,
+)
 from .enemy_data import ENEMIES, STAGE_MODIFIERS
 from .abilities import ABILITIES, AbilityProfile
+from .achievements import ACHIEVEMENTS
 from .entities import Enemy, Pickup, Player, Projectile, SupportDrone
 from .meta import (
     UPGRADE_DEFINITIONS,
@@ -20,6 +28,8 @@ from .meta import (
     can_purchase_upgrade,
     load_progress,
     purchase_upgrade,
+    record_run,
+    update_settings,
     upgrade_summary,
 )
 from .relic_data import RelicProfile, random_relic
@@ -48,14 +58,59 @@ class Game:
         self.characters: List[CharacterProfile] = CHARACTERS
         self.character_index = 0
         self.progress = load_progress(self.characters)
+        self.settings = self.progress.settings
+        self.colors = get_palette(self.settings.color_profile)
+        self.difficulty_profile = DIFFICULTY_PRESETS.get(
+            self.settings.difficulty, DIFFICULTY_PRESETS["normal"]
+        )
         self.meta_character_index = 0
         self.meta_category_index = 0
         self.meta_categories = list(UPGRADE_DEFINITIONS.keys())
         self.meta_message = ""
         self.meta_message_timer = 0.0
         self.selected_character: Optional[CharacterProfile] = None
-        self.state = "character_select"
+        self.state = "main_menu"
         self.running = True
+        self.main_menu_items = [
+            ("Launch Expedition", self.enter_character_select),
+            ("Dive Lab Upgrades", self.enter_meta_lab),
+            ("Achievement Deck", self.enter_achievements),
+            ("Command Console", self.enter_settings),
+            ("Exit to Desktop", self.request_quit),
+        ]
+        self.main_menu_index = 0
+        self.pause_menu_options = [
+            ("Resume Dive", self.resume_run),
+            ("Settings", self.enter_settings_from_pause),
+            ("Abort Expedition", self.abort_to_main_menu),
+        ]
+        self.pause_index = 0
+        self.settings_index = 0
+        self.settings_items = [
+            {"label": "Master Volume", "key": "master_volume", "type": "slider", "step": 0.05},
+            {"label": "Music Volume", "key": "music_volume", "type": "slider", "step": 0.05},
+            {"label": "Effects Volume", "key": "sfx_volume", "type": "slider", "step": 0.05},
+            {
+                "label": "Difficulty",
+                "key": "difficulty",
+                "type": "choices",
+                "choices": list(DIFFICULTY_PRESETS.keys()),
+            },
+            {"label": "Screen Shake", "key": "screen_shake", "type": "toggle"},
+            {"label": "Damage Numbers", "key": "damage_numbers", "type": "toggle"},
+            {"label": "Auto Pause on Focus Loss", "key": "auto_pause", "type": "toggle"},
+            {
+                "label": "Color Profile",
+                "key": "color_profile",
+                "type": "choices",
+                "choices": list(COLOR_PALETTES.keys()),
+            },
+            {"label": "Tutorial Prompts", "key": "show_tutorials", "type": "toggle"},
+        ]
+        self.achievements_scroll = 0
+        self.achievement_notifications: List[tuple[str, float]] = []
+        self.previous_state: Optional[str] = None
+        self.settings_context = "main"
 
         self.player: Optional[Player] = None
         self.projectiles = pygame.sprite.Group()
@@ -90,6 +145,11 @@ class Game:
         self.meta_drop_bonus = 0.0
         self.meta_bonus_reward = 0.0
         self.meta_starting_relics = 0
+        self.highest_combo = 0
+        self.ability_uses = 0
+        self.relics_bound_run = 0
+        self.weapons_synced_run = 0
+        self.drones_deployed_run = 0
         self.reset_relic_effects()
 
     def run(self) -> None:
@@ -104,35 +164,212 @@ class Game:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
-            elif event.type == pygame.KEYDOWN:
-                if self.state == "character_select":
-                    if event.key in (pygame.K_RIGHT, pygame.K_d):
-                        self.character_index = (self.character_index + 1) % len(self.characters)
-                    elif event.key in (pygame.K_LEFT, pygame.K_a):
-                        self.character_index = (self.character_index - 1) % len(self.characters)
-                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        self.start_run(self.characters[self.character_index])
-                    elif event.key in (pygame.K_u, pygame.K_TAB):
-                        self.state = "meta"
-                        self.meta_character_index = self.character_index
-                elif self.state == "meta":
-                    if event.key in (pygame.K_ESCAPE, pygame.K_TAB):
-                        self.state = "character_select"
-                    elif event.key in (pygame.K_RIGHT, pygame.K_d):
-                        self.meta_character_index = (self.meta_character_index + 1) % len(self.characters)
-                    elif event.key in (pygame.K_LEFT, pygame.K_a):
-                        self.meta_character_index = (self.meta_character_index - 1) % len(self.characters)
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        self.meta_category_index = (self.meta_category_index + 1) % len(self.meta_categories)
-                    elif event.key in (pygame.K_UP, pygame.K_w):
-                        self.meta_category_index = (self.meta_category_index - 1) % len(self.meta_categories)
-                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                        self.purchase_selected_upgrade()
-                elif self.state == "running":
-                    if event.key == pygame.K_q:
-                        self.try_activate_ability()
-                elif self.state == "game_over" and event.key in (pygame.K_RETURN, pygame.K_SPACE):
-                    self.reset_to_select()
+                continue
+
+            if self.state == "main_menu":
+                self.handle_main_menu_event(event)
+            elif self.state == "settings":
+                self.handle_settings_event(event)
+            elif self.state == "achievements":
+                self.handle_achievements_event(event)
+            elif self.state == "character_select":
+                self.handle_character_select_event(event)
+            elif self.state == "meta":
+                self.handle_meta_event(event)
+            elif self.state == "running":
+                self.handle_running_event(event)
+            elif self.state == "paused":
+                self.handle_pause_event(event)
+            elif self.state == "game_over":
+                self.handle_game_over_event(event)
+
+    def handle_main_menu_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_DOWN, pygame.K_s):
+            self.main_menu_index = (self.main_menu_index + 1) % len(self.main_menu_items)
+        elif event.key in (pygame.K_UP, pygame.K_w):
+            self.main_menu_index = (self.main_menu_index - 1) % len(self.main_menu_items)
+        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            _, action = self.main_menu_items[self.main_menu_index]
+            action()
+        elif event.key in (pygame.K_ESCAPE, pygame.K_q):
+            self.request_quit()
+
+    def handle_settings_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_TAB):
+            self.exit_settings()
+            return
+        if event.key in (pygame.K_DOWN, pygame.K_s):
+            self.settings_index = (self.settings_index + 1) % len(self.settings_items)
+            return
+        if event.key in (pygame.K_UP, pygame.K_w):
+            self.settings_index = (self.settings_index - 1) % len(self.settings_items)
+            return
+        item = self.settings_items[self.settings_index]
+        key = item["key"]
+        value = getattr(self.settings, key)
+        if item["type"] == "slider" and event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
+            delta = item.get("step", 0.05)
+            if event.key in (pygame.K_LEFT, pygame.K_a):
+                value = max(0.0, float(value) - delta)
+            else:
+                value = min(1.0, float(value) + delta)
+            setattr(self.settings, key, value)
+            self.apply_setting_update(key)
+        elif item["type"] == "toggle" and event.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_a, pygame.K_d, pygame.K_RETURN, pygame.K_SPACE):
+            setattr(self.settings, key, not bool(value))
+            self.apply_setting_update(key)
+        elif item["type"] == "choices" and event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
+            choices = item.get("choices", [])
+            if choices:
+                index = choices.index(value) if value in choices else 0
+                if event.key in (pygame.K_LEFT, pygame.K_a):
+                    index = (index - 1) % len(choices)
+                else:
+                    index = (index + 1) % len(choices)
+                setattr(self.settings, key, choices[index])
+                self.apply_setting_update(key)
+
+    def handle_achievements_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_TAB, pygame.K_BACKSPACE):
+            self.state = self.previous_state or "main_menu"
+            return
+        max_scroll = max(0, len(ACHIEVEMENTS) - 7)
+        if event.key in (pygame.K_DOWN, pygame.K_s):
+            self.achievements_scroll = min(max_scroll, self.achievements_scroll + 1)
+        elif event.key in (pygame.K_UP, pygame.K_w):
+            self.achievements_scroll = max(0, self.achievements_scroll - 1)
+
+    def handle_character_select_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_RIGHT, pygame.K_d):
+            self.character_index = (self.character_index + 1) % len(self.characters)
+        elif event.key in (pygame.K_LEFT, pygame.K_a):
+            self.character_index = (self.character_index - 1) % len(self.characters)
+        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            self.start_run(self.characters[self.character_index])
+        elif event.key in (pygame.K_u, pygame.K_TAB):
+            self.enter_meta_lab()
+        elif event.key == pygame.K_ESCAPE:
+            self.state = "main_menu"
+
+    def handle_meta_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_TAB):
+            self.state = "character_select"
+            return
+        if event.key in (pygame.K_RIGHT, pygame.K_d):
+            self.meta_character_index = (self.meta_character_index + 1) % len(self.characters)
+        elif event.key in (pygame.K_LEFT, pygame.K_a):
+            self.meta_character_index = (self.meta_character_index - 1) % len(self.characters)
+        elif event.key in (pygame.K_DOWN, pygame.K_s):
+            self.meta_category_index = (self.meta_category_index + 1) % len(self.meta_categories)
+        elif event.key in (pygame.K_UP, pygame.K_w):
+            self.meta_category_index = (self.meta_category_index - 1) % len(self.meta_categories)
+        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            self.purchase_selected_upgrade()
+
+    def handle_running_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key == pygame.K_q:
+            self.try_activate_ability()
+        elif event.key == pygame.K_ESCAPE:
+            self.pause_index = 0
+            self.previous_state = "running"
+            self.state = "paused"
+
+    def handle_pause_event(self, event: pygame.event.Event) -> None:
+        if event.type != pygame.KEYDOWN:
+            return
+        if event.key in (pygame.K_ESCAPE, pygame.K_TAB):
+            self.resume_run()
+            return
+        if event.key in (pygame.K_DOWN, pygame.K_s):
+            self.pause_index = (self.pause_index + 1) % len(self.pause_menu_options)
+        elif event.key in (pygame.K_UP, pygame.K_w):
+            self.pause_index = (self.pause_index - 1) % len(self.pause_menu_options)
+        elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            _, action = self.pause_menu_options[self.pause_index]
+            action()
+
+    def handle_game_over_event(self, event: pygame.event.Event) -> None:
+        if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            self.reset_to_select()
+
+    def enter_character_select(self) -> None:
+        self.previous_state = "main_menu"
+        self.reset_to_select()
+
+    def enter_meta_lab(self) -> None:
+        self.previous_state = self.state
+        self.state = "meta"
+        if self.previous_state == "character_select":
+            self.meta_character_index = self.character_index
+
+    def enter_achievements(self) -> None:
+        self.previous_state = self.state
+        self.state = "achievements"
+        self.achievements_scroll = 0
+
+    def enter_settings(self) -> None:
+        self.previous_state = self.state
+        self.settings_context = "main"
+        self.state = "settings"
+
+    def enter_settings_from_pause(self) -> None:
+        self.previous_state = "paused"
+        self.settings_context = "pause"
+        self.state = "settings"
+
+    def resume_run(self) -> None:
+        self.state = "running"
+        self.previous_state = None
+
+    def abort_to_main_menu(self) -> None:
+        self.reset_to_select()
+        self.state = "main_menu"
+        self.previous_state = None
+
+    def request_quit(self) -> None:
+        self.running = False
+
+    def exit_settings(self) -> None:
+        if self.settings_context == "pause":
+            self.state = "paused"
+        elif self.previous_state:
+            self.state = self.previous_state
+        else:
+            self.state = "main_menu"
+        self.settings_context = "main"
+
+    def apply_setting_update(self, key: str) -> None:
+        value = getattr(self.settings, key)
+        update_settings(self.progress, key, value)
+        if key == "difficulty":
+            self.difficulty_profile = DIFFICULTY_PRESETS.get(value, DIFFICULTY_PRESETS["normal"])
+        elif key == "color_profile":
+            self.colors = get_palette(str(value))
+
+    def update_notifications(self, dt: float) -> None:
+        if not self.achievement_notifications:
+            return
+        updated: List[tuple[str, float]] = []
+        for text, timer in self.achievement_notifications:
+            timer -= dt
+            if timer > 0:
+                updated.append((text, timer))
+        self.achievement_notifications = updated
+
+    def push_achievement_toast(self, text: str) -> None:
+        self.achievement_notifications.append((text, 4.0))
 
     def update(self, dt: float) -> None:
         if self.meta_message_timer > 0:
@@ -142,7 +379,12 @@ class Game:
             if self.run_message_timer == 0:
                 self.run_message = ""
 
-        if self.state in {"character_select", "meta"}:
+        self.update_notifications(dt)
+
+        if self.state in {"character_select", "meta", "main_menu", "settings", "achievements"}:
+            return
+
+        if self.state == "paused":
             return
 
         if self.state == "running" and self.player:
@@ -258,8 +500,14 @@ class Game:
                     self.pickup_cooldown = 0.4
 
     def draw(self) -> None:
-        self.screen.fill(RUN_COLORS["void"])
-        if self.state == "character_select":
+        if self.state == "main_menu":
+            self.draw_main_menu()
+        elif self.state == "settings":
+            self.draw_settings()
+        elif self.state == "achievements":
+            self.draw_achievements()
+        elif self.state == "character_select":
+            self.screen.fill(self.colors["void"])
             self.draw_character_select()
         elif self.state == "running":
             self.draw_arena()
@@ -270,22 +518,35 @@ class Game:
             if self.player:
                 self.screen.blit(self.player.image, self.player.rect)
             self.draw_ui()
+            self.draw_achievement_toasts()
+        elif self.state == "paused":
+            self.draw_arena()
+            self.pickups.draw(self.screen)
+            self.enemies.draw(self.screen)
+            self.drones.draw(self.screen)
+            self.projectiles.draw(self.screen)
+            if self.player:
+                self.screen.blit(self.player.image, self.player.rect)
+            self.draw_ui(dimmed=True)
+            self.draw_pause_menu()
+            self.draw_achievement_toasts()
         elif self.state == "meta":
             self.draw_meta_progression()
         elif self.state == "game_over":
             self.draw_arena()
             self.draw_game_over()
+            self.draw_achievement_toasts()
         pygame.display.flip()
 
     def draw_character_select(self) -> None:
         character = self.characters[self.character_index]
-        title_surface = self.font_large.render("Select Your Diver", True, RUN_COLORS["ui_accent"])
+        title_surface = self.font_large.render("Select Your Diver", True, self.colors["ui_accent"])
         self.screen.blit(title_surface, title_surface.get_rect(center=(SCREEN_WIDTH // 2, 120)))
 
         sprite = player_sprite(character.primary_color, character.secondary_color)
         self.screen.blit(sprite, sprite.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 40)))
 
-        name_surface = self.font_medium.render(f"{character.name} — {character.title}", True, RUN_COLORS["loot"])
+        name_surface = self.font_medium.render(f"{character.name} — {character.title}", True, self.colors["loot"])
         self.screen.blit(name_surface, name_surface.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 120)))
 
         desc_lines = wrap_text(character.description, self.font_small, SCREEN_WIDTH - 200)
@@ -294,7 +555,7 @@ class Game:
             self.screen.blit(text, (SCREEN_WIDTH // 2 - text.get_width() // 2, SCREEN_HEIGHT // 2 + 170 + i * 22))
 
         ability = ABILITIES[character.ability_key]
-        ability_title = self.font_small.render(f"Ability: {ability.name}", True, RUN_COLORS["ui_accent"])
+        ability_title = self.font_small.render(f"Ability: {ability.name}", True, self.colors["ui_accent"])
         self.screen.blit(ability_title, ability_title.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 240)))
         ability_lines = wrap_text(ability.description, self.font_small, SCREEN_WIDTH - 240)
         for i, line in enumerate(ability_lines[:3]):
@@ -305,29 +566,159 @@ class Game:
 
         prompt = self.font_small.render("←/→ to browse, Enter to deploy", True, (200, 200, 200))
         self.screen.blit(prompt, prompt.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 80)))
-        upgrade_prompt = self.font_small.render("Press U/Tab for Dive Lab Upgrades", True, RUN_COLORS["ui_accent"])
+        upgrade_prompt = self.font_small.render("Press U/Tab for Dive Lab Upgrades", True, self.colors["ui_accent"])
         self.screen.blit(upgrade_prompt, upgrade_prompt.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50)))
+        self.draw_achievement_toasts()
+
+    def draw_main_menu(self) -> None:
+        self.screen.fill(self.colors["void"])
+        title = self.font_large.render("DESCENT", True, self.colors["ui_accent"])
+        subtitle = self.font_small.render("Permutation Protocol", True, (200, 200, 200))
+        self.screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 120)))
+        self.screen.blit(subtitle, subtitle.get_rect(center=(SCREEN_WIDTH // 2, 170)))
+
+        for idx, (label, _) in enumerate(self.main_menu_items):
+            rect = pygame.Rect(SCREEN_WIDTH // 2 - 240, 240 + idx * 70, 480, 58)
+            pygame.draw.rect(self.screen, self.colors["ui_bg"], rect, border_radius=10)
+            if idx == self.main_menu_index:
+                pygame.draw.rect(self.screen, self.colors["ui_accent"], rect, 3, border_radius=10)
+            text_color = self.colors["loot"] if idx == self.main_menu_index else (210, 210, 210)
+            text = self.font_medium.render(label, True, text_color)
+            self.screen.blit(text, text.get_rect(center=rect.center))
+
+        stats = self.progress.statistics
+        stats_lines = [
+            f"Runs logged: {int(stats.get('runs_played', 0))}",
+            f"Lifetime kills: {int(stats.get('total_kills', 0))}",
+            f"Highest combo: {int(stats.get('highest_combo', 0))}",
+            f"Deepest stage: {int(stats.get('deepest_stage', 0))}",
+            f"Achievements: {int(stats.get('achievements_unlocked', 0))}/{len(ACHIEVEMENTS)}",
+        ]
+        for idx, line in enumerate(stats_lines):
+            stat = self.font_small.render(line, True, (200, 200, 200))
+            self.screen.blit(stat, (60, 260 + idx * 26))
+
+        difficulty = self.font_small.render(
+            f"Difficulty: {self.settings.difficulty.title()}  •  Palette: {self.settings.color_profile.replace('_', ' ').title()}",
+            True,
+            (190, 190, 190),
+        )
+        self.screen.blit(difficulty, difficulty.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 80)))
+        self.draw_achievement_toasts()
+
+    def draw_settings(self) -> None:
+        self.screen.fill(self.colors["void"])
+        title = self.font_large.render("Command Console", True, self.colors["ui_accent"])
+        self.screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 90)))
+
+        for idx, item in enumerate(self.settings_items):
+            rect = pygame.Rect(SCREEN_WIDTH // 2 - 340, 180 + idx * 70, 680, 60)
+            pygame.draw.rect(self.screen, self.colors["ui_bg"], rect, border_radius=10)
+            if idx == self.settings_index:
+                pygame.draw.rect(self.screen, self.colors["ui_accent"], rect, 3, border_radius=10)
+
+            value = getattr(self.settings, item["key"])
+            if item["type"] == "slider":
+                display = f"{int(float(value) * 100)}%"
+            elif item["type"] == "toggle":
+                display = "On" if value else "Off"
+            else:
+                display = str(value).replace("_", " ").title()
+
+            label = self.font_medium.render(item["label"], True, (220, 220, 220))
+            value_surface = self.font_medium.render(display, True, self.colors["loot"])
+            self.screen.blit(label, (rect.x + 20, rect.y + 14))
+            self.screen.blit(value_surface, value_surface.get_rect(right=rect.right - 20, centery=rect.centery))
+
+        hint = self.font_small.render("Enter to adjust • Esc to exit", True, (180, 180, 180))
+        self.screen.blit(hint, hint.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 60)))
+        self.draw_achievement_toasts()
+
+    def draw_achievements(self) -> None:
+        self.screen.fill(self.colors["void"])
+        title = self.font_large.render("Achievement Deck", True, self.colors["ui_accent"])
+        self.screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 90)))
+
+        achievements_list = list(ACHIEVEMENTS.values())
+        visible_rows = 7
+        max_scroll = max(0, len(achievements_list) - visible_rows)
+        start = min(self.achievements_scroll, max_scroll)
+        for idx in range(visible_rows):
+            index = start + idx
+            if index >= len(achievements_list):
+                break
+            achievement = achievements_list[index]
+            record = self.progress.achievements.get(achievement.key)
+            unlocked = record.unlocked if record else False
+            rect = pygame.Rect(140, 180 + idx * 80, SCREEN_WIDTH - 280, 70)
+            pygame.draw.rect(self.screen, self.colors["ui_bg"], rect, border_radius=12)
+            if unlocked:
+                pygame.draw.rect(self.screen, self.colors["loot"], rect, 2, border_radius=12)
+            name_color = self.colors["loot"] if unlocked else (210, 210, 210)
+            name = self.font_medium.render(achievement.name, True, name_color)
+            self.screen.blit(name, (rect.x + 20, rect.y + 10))
+            desc = self.font_small.render(achievement.description, True, (190, 190, 190))
+            self.screen.blit(desc, (rect.x + 20, rect.y + 38))
+            reward_text = self.font_small.render(
+                f"Reward: {achievement.reward_credits} Aether",
+                True,
+                self.colors["ui_accent"] if unlocked else (160, 160, 160),
+            )
+            self.screen.blit(reward_text, reward_text.get_rect(right=rect.right - 20, centery=rect.centery))
+
+        instructions = self.font_small.render("↑/↓ scroll • Esc to return", True, (190, 190, 190))
+        self.screen.blit(instructions, instructions.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 60)))
+        self.draw_achievement_toasts()
+
+    def draw_pause_menu(self) -> None:
+        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 140))
+        self.screen.blit(overlay, (0, 0))
+        title = self.font_large.render("Paused", True, self.colors["ui_accent"])
+        self.screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 140)))
+        for idx, (label, _) in enumerate(self.pause_menu_options):
+            rect = pygame.Rect(SCREEN_WIDTH // 2 - 220, 240 + idx * 70, 440, 58)
+            pygame.draw.rect(self.screen, self.colors["ui_bg"], rect, border_radius=10)
+            if idx == self.pause_index:
+                pygame.draw.rect(self.screen, self.colors["ui_accent"], rect, 3, border_radius=10)
+            text_color = self.colors["loot"] if idx == self.pause_index else (210, 210, 210)
+            text = self.font_medium.render(label, True, text_color)
+            self.screen.blit(text, text.get_rect(center=rect.center))
+
+    def draw_achievement_toasts(self) -> None:
+        if not self.achievement_notifications:
+            return
+        for idx, (text, timer) in enumerate(self.achievement_notifications[:3]):
+            alpha = max(80, min(220, int(255 * (timer / 4.0))))
+            rect = pygame.Rect(SCREEN_WIDTH // 2 - 260, 80 + idx * 70, 520, 54)
+            toast = pygame.Surface(rect.size, pygame.SRCALPHA)
+            toast.fill((*self.colors["ui_bg"], alpha))
+            self.screen.blit(toast, rect)
+            pygame.draw.rect(self.screen, self.colors["ui_accent"], rect, 2, border_radius=12)
+            label = self.font_small.render(text, True, self.colors["loot"])
+            self.screen.blit(label, label.get_rect(center=rect.center))
 
     def draw_arena(self) -> None:
-        floor_color = RUN_COLORS["floor"]
-        wall_color = RUN_COLORS["wall"]
+        self.screen.fill(self.colors["void"])
+        floor_color = self.colors["floor"]
+        wall_color = self.colors["wall"]
         pygame.draw.rect(self.screen, floor_color, pygame.Rect(80, 80, SCREEN_WIDTH - 160, SCREEN_HEIGHT - 160))
         pygame.draw.rect(self.screen, wall_color, pygame.Rect(60, 60, SCREEN_WIDTH - 120, SCREEN_HEIGHT - 120), 8)
         for field in self.gravity_fields:
             position = (int(field["position"].x), int(field["position"].y))
             radius = int(field["radius"])
-            pygame.draw.circle(self.screen, RUN_COLORS["field"], position, radius, 2)
+            pygame.draw.circle(self.screen, self.colors["field"], position, radius, 2)
 
-    def draw_ui(self) -> None:
+    def draw_ui(self, dimmed: bool = False) -> None:
         if not self.player:
             return
         # Health bar
         ui_rect = pygame.Rect(30, 20, 400, 50)
-        pygame.draw.rect(self.screen, RUN_COLORS["ui_bg"], ui_rect)
+        pygame.draw.rect(self.screen, self.colors["ui_bg"], ui_rect)
         hp_ratio = self.player.hp / self.player.max_hp
         pygame.draw.rect(
             self.screen,
-            RUN_COLORS["player_secondary"],
+            self.colors["player_secondary"],
             (ui_rect.x + 10, ui_rect.y + 10, int((ui_rect.width - 20) * hp_ratio), ui_rect.height - 20),
         )
         hp_text = self.font_small.render(f"Integrity {int(self.player.hp)}/{self.player.max_hp}", True, (255, 255, 255))
@@ -337,16 +728,16 @@ class Game:
             shield_width = int((ui_rect.width - 20) * shield_ratio)
             pygame.draw.rect(
                 self.screen,
-                RUN_COLORS["shield"],
+                self.colors["shield"],
                 (ui_rect.x + 10, ui_rect.y + 10, shield_width, ui_rect.height - 20),
                 2,
             )
 
         # Weapon status
         weapon_rect = pygame.Rect(SCREEN_WIDTH - 430, 20, 400, 80)
-        pygame.draw.rect(self.screen, RUN_COLORS["ui_bg"], weapon_rect)
+        pygame.draw.rect(self.screen, self.colors["ui_bg"], weapon_rect)
         if self.weapon_instance:
-            name_text = self.font_small.render(self.weapon_instance.profile.name, True, RUN_COLORS["loot"])
+            name_text = self.font_small.render(self.weapon_instance.profile.name, True, self.colors["loot"])
             self.screen.blit(name_text, (weapon_rect.x + 14, weapon_rect.y + 14))
             ammo_text = self.font_small.render(
                 f"Ammo {self.weapon_instance.ammo}/{self.weapon_instance.profile.magazine}", True, (220, 220, 220)
@@ -377,7 +768,7 @@ class Game:
             self.screen.blit(meta_text, (30, 120))
 
         ability_rect = pygame.Rect(30, SCREEN_HEIGHT - 90, 260, 60)
-        pygame.draw.rect(self.screen, RUN_COLORS["ui_bg"], ability_rect)
+        pygame.draw.rect(self.screen, self.colors["ui_bg"], ability_rect)
         if self.selected_character:
             ability = ABILITIES[self.selected_character.ability_key]
             ready = self.ability_timer == 0
@@ -387,7 +778,7 @@ class Game:
             if ratio > 0:
                 pygame.draw.rect(
                     self.screen,
-                    RUN_COLORS["cooldown"],
+                    self.colors["cooldown"],
                     (
                         ability_rect.x + 10,
                         ability_rect.y + 10,
@@ -395,20 +786,20 @@ class Game:
                         ability_rect.height - 20,
                     ),
                 )
-            label_color = RUN_COLORS["ui_accent"] if ready else (200, 200, 200)
+            label_color = self.colors["ui_accent"] if ready else (200, 200, 200)
             ability_name = self.font_small.render(f"{ability.name}", True, label_color)
             self.screen.blit(ability_name, (ability_rect.x + 16, ability_rect.y + 14))
             ability_hint = self.font_small.render("Q — Signature", True, (160, 160, 160))
             self.screen.blit(ability_hint, (ability_rect.x + 16, ability_rect.y + 36))
 
         combo_rect = pygame.Rect(320, 20, 180, 50)
-        pygame.draw.rect(self.screen, RUN_COLORS["ui_bg"], combo_rect)
-        combo_text = self.font_small.render(f"Combo {self.combo_meter} x{self.combo_level}", True, RUN_COLORS["combo"])
+        pygame.draw.rect(self.screen, self.colors["ui_bg"], combo_rect)
+        combo_text = self.font_small.render(f"Combo {self.combo_meter} x{self.combo_level}", True, self.colors["combo"])
         self.screen.blit(combo_text, (combo_rect.x + 16, combo_rect.y + 16))
 
         relic_rect = pygame.Rect(SCREEN_WIDTH - 430, 110, 400, 150)
-        pygame.draw.rect(self.screen, RUN_COLORS["ui_bg"], relic_rect)
-        relic_header = self.font_small.render(f"Relics {len(self.relics)}", True, RUN_COLORS["loot"])
+        pygame.draw.rect(self.screen, self.colors["ui_bg"], relic_rect)
+        relic_header = self.font_small.render(f"Relics {len(self.relics)}", True, self.colors["loot"])
         self.screen.blit(relic_header, (relic_rect.x + 14, relic_rect.y + 12))
         for idx, relic in enumerate(self.relics[-5:]):
             relic_text = self.font_small.render(relic.name, True, (200, 200, 200))
@@ -420,18 +811,23 @@ class Game:
                 text = "Press E to attune new weapon"
             else:
                 text = "Press E to bind relic"
-            prompt = self.font_small.render(text, True, RUN_COLORS["ui_accent"])
+            prompt = self.font_small.render(text, True, self.colors["ui_accent"])
             self.screen.blit(prompt, prompt.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 60)))
 
         if self.run_message_timer > 0 and self.run_message:
-            message = self.font_small.render(self.run_message, True, RUN_COLORS["ui_accent"])
+            message = self.font_small.render(self.run_message, True, self.colors["ui_accent"])
             self.screen.blit(message, message.get_rect(center=(SCREEN_WIDTH // 2, 80)))
+
+        if dimmed:
+            veil = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            veil.fill((0, 0, 0, 120))
+            self.screen.blit(veil, (0, 0))
 
     def draw_game_over(self) -> None:
         overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
         overlay.fill((0, 0, 0, 160))
         self.screen.blit(overlay, (0, 0))
-        text = self.font_large.render("Run Lost", True, RUN_COLORS["danger"])
+        text = self.font_large.render("Run Lost", True, self.colors["danger"])
         self.screen.blit(text, text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 60)))
         stats_lines = [
             f"Stages cleared: {self.wave_state.stage - 1 if self.wave_state else 0}",
@@ -443,7 +839,7 @@ class Game:
             stat_text = self.font_medium.render(line, True, (230, 230, 230))
             self.screen.blit(stat_text, stat_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40 + i * 36)))
         reward_line = f"Aether stored: +{self.last_reward} (Total {self.progress.credits})"
-        reward_text = self.font_small.render(reward_line, True, RUN_COLORS["loot"])
+        reward_text = self.font_small.render(reward_line, True, self.colors["loot"])
         self.screen.blit(reward_text, reward_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 200)))
         prompt = self.font_small.render("Press Enter to recalibrate", True, (220, 220, 220))
         self.screen.blit(prompt, prompt.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 80)))
@@ -492,6 +888,11 @@ class Game:
         self.state = "running"
         self.active_meta_levels = upgrade_summary(character, self.progress)
         self.last_reward = 0
+        self.highest_combo = 0
+        self.ability_uses = 0
+        self.relics_bound_run = 0
+        self.weapons_synced_run = 0
+        self.drones_deployed_run = 0
         self.spawn_wave()
         if self.meta_starting_relics > 0:
             for _ in range(self.meta_starting_relics):
@@ -502,7 +903,9 @@ class Game:
         if not self.wave_state:
             return
         stage = self.wave_state.stage
-        enemy_count = 5 + stage * 2
+        base_count = 5 + stage * 2
+        spawn_rate = self.difficulty_profile.get("spawn_rate", 1.0)
+        enemy_count = max(3, int(round(base_count * spawn_rate)))
         self.wave_state.remaining_to_spawn = enemy_count
         self.wave_state.alive_enemies = enemy_count
         self.stage_timer = 0.0
@@ -518,21 +921,25 @@ class Game:
             random.randint(140, SCREEN_WIDTH - 140),
             random.randint(140, SCREEN_HEIGHT - 140),
         )
-        enemy = Enemy(profile, modifier["hp"], position)
-        enemy.speed *= modifier["speed"]
-        enemy.damage *= modifier["damage"]
+        diff = self.difficulty_profile
+        hp_mod = modifier["hp"] * diff.get("enemy_hp", 1.0)
+        speed_mod = modifier["speed"] * diff.get("enemy_speed", 1.0)
+        damage_mod = modifier["damage"] * diff.get("enemy_damage", 1.0)
+        enemy = Enemy(profile, hp_mod, position)
+        enemy.speed = profile.speed * speed_mod
+        enemy.damage = profile.damage * damage_mod
         self.enemies.add(enemy)
         self.wave_state.remaining_to_spawn -= 1
 
     def spawn_pickup(self, position) -> None:
         exclude = {self.weapon_instance.profile.name} if self.weapon_instance else set()
         weapon_profile = random_weapon(exclude=exclude)
-        pickup = Pickup("weapon", weapon_profile, pygame.Vector2(position), RUN_COLORS["loot"])
+        pickup = Pickup("weapon", weapon_profile, pygame.Vector2(position), self.colors["loot"])
         self.pickups.add(pickup)
 
     def spawn_relic(self, position) -> None:
         relic = random_relic(exclude={r.key for r in self.relics})
-        pickup = Pickup("relic", relic, pygame.Vector2(position), RUN_COLORS["relic"])
+        pickup = Pickup("relic", relic, pygame.Vector2(position), self.colors["relic"])
         self.pickups.add(pickup)
 
     def advance_wave(self) -> None:
@@ -555,6 +962,7 @@ class Game:
         self.player.weapon = self.weapon_instance
         self.player.refresh_stats()
         self.push_run_message(f"Attuned {profile.name}", 1.2)
+        self.weapons_synced_run += 1
 
     def trigger_game_over(self) -> None:
         reward = int(
@@ -565,8 +973,25 @@ class Game:
         reward = max(25, reward)
         reward += int(self.meta_bonus_reward)
         reward += int(self.relic_effects.get("bonus_credits", 0.0))
+        reward = int(reward * self.difficulty_profile.get("reward", 1.0))
         self.last_reward = reward
         award_credits(self.progress, reward)
+        run_stats = {
+            "kills": self.kills,
+            "damage_dealt": self.total_damage_dealt,
+            "damage_taken": self.total_damage_taken,
+            "relics": self.relics_bound_run,
+            "weapons": self.weapons_synced_run,
+            "combo": self.highest_combo,
+            "duration": self.elapsed_time,
+            "stage": self.wave_state.stage if self.wave_state else 0,
+            "credits": reward,
+            "ability_uses": self.ability_uses,
+        }
+        unlocks = record_run(self.progress, run_stats)
+        for achievement in unlocks:
+            toast = f"{achievement.name} unlocked! +{achievement.reward_credits} Aether"
+            self.push_achievement_toast(toast)
         self.state = "game_over"
 
     def push_run_message(self, text: str, duration: float = 1.6) -> None:
@@ -669,6 +1094,7 @@ class Game:
         if self.wave_state:
             self.wave_state.alive_enemies -= 1
         self.combo_meter += 1
+        self.highest_combo = max(self.highest_combo, self.combo_meter)
         self.combo_timer = 5.0 + self.relic_effects.get("combo_extend", 0.0)
         new_level = max(self.combo_level, self.combo_meter // 10)
         if new_level > self.combo_level:
@@ -690,6 +1116,7 @@ class Game:
             self.push_run_message("Ability recharging...", 0.8)
             return
         ability = ABILITIES[self.selected_character.ability_key]
+        self.ability_uses += 1
         self.execute_ability(ability)
         combo_reduction = min(0.45, 0.05 * self.combo_level)
         cooldown = max(ability.cooldown * 0.4, ability.cooldown * (1.0 - combo_reduction))
@@ -734,7 +1161,13 @@ class Game:
                 direction = pygame.Vector2(math.cos(angle), math.sin(angle))
                 damage = (self.weapon_instance.damage if self.weapon_instance else 14.0) * ability.magnitude
                 speed = self.weapon_instance.profile.projectile_speed if self.weapon_instance else 520
-                projectile = Projectile(center, direction, speed, damage, self.weapon_instance.profile.color if self.weapon_instance else RUN_COLORS["loot"])
+                projectile = Projectile(
+                    center,
+                    direction,
+                    speed,
+                    damage,
+                    self.weapon_instance.profile.color if self.weapon_instance else self.colors["loot"],
+                )
                 self.projectiles.add(projectile)
             ignite_duration = ability.payload.get("ignite", 0.0)
             if ignite_duration > 0:
@@ -750,6 +1183,7 @@ class Game:
                 duration=ability.payload.get("duration", 14.0),
             )
             self.drones.add(drone)
+            self.drones_deployed_run += 1
         elif ability.effect == "summon_drone_squad":
             count = int(ability.payload.get("count", 3))
             for _ in range(count):
@@ -761,6 +1195,7 @@ class Game:
                     duration=ability.payload.get("duration", 16.0),
                 )
                 self.drones.add(drone)
+            self.drones_deployed_run += count
         elif ability.effect == "gravity":
             field = {
                 "position": pygame.Vector2(self.player.rect.center),
@@ -805,6 +1240,7 @@ class Game:
         if not self.player:
             return
         self.relics.append(relic)
+        self.relics_bound_run += 1
         self.apply_relic_effect(relic)
         self.push_run_message(f"Bound relic: {relic.name}", 2.0)
 
@@ -896,11 +1332,11 @@ class Game:
         self.meta_message_timer = 2.5
 
     def draw_meta_progression(self) -> None:
-        self.screen.fill(RUN_COLORS["void"])
-        title = self.font_large.render("Dive Lab Upgrades", True, RUN_COLORS["ui_accent"])
+        self.screen.fill(self.colors["void"])
+        title = self.font_large.render("Dive Lab Upgrades", True, self.colors["ui_accent"])
         self.screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 90)))
 
-        credits = self.font_medium.render(f"Aether Bank: {self.progress.credits}", True, RUN_COLORS["loot"])
+        credits = self.font_medium.render(f"Aether Bank: {self.progress.credits}", True, self.colors["loot"])
         self.screen.blit(credits, credits.get_rect(center=(SCREEN_WIDTH // 2, 150)))
 
         character = self.characters[self.meta_character_index]
@@ -915,11 +1351,11 @@ class Game:
             level = upgrades.get(key, 0)
             cost = definition.cost_for_level(level)
             is_selected = idx == self.meta_category_index
-            label_color = RUN_COLORS["loot"] if is_selected else (200, 200, 200)
+            label_color = self.colors["loot"] if is_selected else (200, 200, 200)
             bg_rect = pygame.Rect(SCREEN_WIDTH // 2 - 120, 220 + idx * 80, 520, 70)
-            pygame.draw.rect(self.screen, RUN_COLORS["ui_bg"], bg_rect)
+            pygame.draw.rect(self.screen, self.colors["ui_bg"], bg_rect)
             if is_selected:
-                pygame.draw.rect(self.screen, RUN_COLORS["ui_accent"], bg_rect, 3)
+                pygame.draw.rect(self.screen, self.colors["ui_accent"], bg_rect, 3)
 
             label = self.font_medium.render(definition.label, True, label_color)
             self.screen.blit(label, (bg_rect.x + 16, bg_rect.y + 10))
@@ -929,11 +1365,11 @@ class Game:
 
             if level >= definition.max_level:
                 cost_text = "MAXED"
-                cost_color = RUN_COLORS["player_secondary"]
+                cost_color = self.colors["player_secondary"]
             else:
                 cost_text = f"Cost {cost}"
                 affordable = can_purchase_upgrade(self.progress, character, key)
-                cost_color = RUN_COLORS["loot"] if affordable else (160, 160, 160)
+                cost_color = self.colors["loot"] if affordable else (160, 160, 160)
             cost_surface = self.font_small.render(cost_text, True, cost_color)
             self.screen.blit(cost_surface, (bg_rect.right - cost_surface.get_width() - 18, bg_rect.y + 44))
 
@@ -950,8 +1386,9 @@ class Game:
         self.screen.blit(instructions, instructions.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50)))
 
         if self.meta_message and self.meta_message_timer > 0:
-            message_surface = self.font_small.render(self.meta_message, True, RUN_COLORS["loot"])
+            message_surface = self.font_small.render(self.meta_message, True, self.colors["loot"])
             self.screen.blit(message_surface, message_surface.get_rect(center=(SCREEN_WIDTH // 2, 200)))
+        self.draw_achievement_toasts()
 
 
 def wrap_text(text: str, font: pygame.font.Font, max_width: int) -> List[str]:

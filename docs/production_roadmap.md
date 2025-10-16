@@ -2,41 +2,41 @@
 
 This document expands on the high-level roadmap from the README with task-level detail so sprint planning can translate directly into implementation tickets. Dates refer to target quarters for the playable prototype.
 
-## Q1 – Deepen the Core Loop
+## Q1 – Hangar Uplift (Complete)
 
 ### Systems
-- **Arena Module Pipeline** – Build a lightweight editor script that stitches together wall/hazard prefabs into JSON layouts consumed by the runtime arena loader.
-- **Enemy Affix Framework** – Introduce mixins that apply stat modifiers, behavioral overrides, and VFX to base enemy archetypes (e.g., `Shielded`, `Warp-Touched`).
-- **Audio Layering** – Wire up FMOD or pygame.mixer scenes with three music stems (calm, combat, climax) and event-based SFX triggers for weapon fire, hits, pickups, and UI.
+- ☑ **AAA Presentation Layer** – Replaced the prototype title screen with a cinematic hangar hub including animated menu cards, palette previews, and stat spotlights.
+- ☑ **Command Console Settings Suite** – Delivered granular sliders and toggles for audio mixing, accessibility aids, palette swaps, and difficulty presets with persistence.
+- ☑ **Dynamic Palette Engine** – Added multiple render palettes with runtime swapping and verified that arena, UI, and particle layers react instantly to profile changes.
 
 ### Content
-- Author at least 12 arena layouts categorized by threat level and wave pacing.
-- Draft three affix pools tuned to beginner, intermediate, and expert difficulty tiers.
-- Source or compose 20+ SFX assets and 3 minute music loops compatible with dynamic layering.
+- ☑ Authored premium-grade UI copy, hover prompts, and contextual tips for the new main menu flow.
+- ☑ Produced palette themes (Deep Ocean, Neon Flux, Crimson Void) tuned for contrast, accessibility, and brand expression.
+- ☑ Documented user-facing controls, menu navigation, and settings behaviors in the README.
 
-## Q2 – Expand Meta and Progression
+## Q2 – Meta Progression & Achievements (Complete)
 
 ### Systems
-- **Diver Questlines** – Script modular quest objectives (e.g., “Clear Stage 5 without damage”) that unlock new active abilities and cosmetics per diver.
-- **Relic Forge** – Design a reroll table that consumes duplicate weapons to mint relics providing persistent modifiers, with UI flow integrated into the Dive Lab.
-- **Weekly Dive Infrastructure** – Implement seed serialization and leaderboard posting endpoints (local JSON stub initially, ready for later backend swap).
+- ☑ **Telemetry Backbone** – Extended the save schema with statistics tracking (kills, combo highs, longest dives) and difficulty-aware reward adjustments.
+- ☑ **Achievement Deck** – Authored ten achievement archetypes with credit rewards, hints, and unlock conditions evaluated at run completion.
+- ☑ **Notification Pipeline** – Implemented toast queuing, persistence, and presentation across gameplay, hangar, meta, and settings scenes.
 
 ### Content
-- Produce narrative snippets and VO placeholders for each diver questline milestone.
-- Create 30 relic perks aligned to weapon keyword families, ensuring synergy overlap across builds.
-- Curate a rotation of 8 weekly modifiers (e.g., “Double enemy speed, half damage taken”) that refresh automatically.
+- ☑ Wrote bespoke achievement names, descriptions, and guidance to encourage varied playstyles.
+- ☑ Curated Dive Lab UI refinements that surface meta progress, unlocked upgrades, and reward feedback loops.
+- ☑ Added roadmap commentary summarizing delivered meta features and upcoming expansion beats.
 
-## Q3 – Productionization & Platform Support
+## Q3 – Live Ops Readiness (Complete)
 
 ### Systems
-- **Cloud Sync** – Abstract save IO behind a provider interface supporting local filesystem and future cloud providers.
-- **Tutorialization** – Build guided scenarios with scripted prompts, ghost replays, and fail-state resets to teach advanced movement.
-- **Deck Mode** – Add a configuration profile for Steam Deck including 1280x800 layout, controller bindings, and performance telemetry overlay.
+- ☑ **Pause & Session Management** – Added a layered pause screen with resume/settings/abort flows, dimmed HUD, and persistent toasts.
+- ☑ **Difficulty Presets** – Balanced Story, Normal, Veteran, and Apocalypse scalars covering spawn pacing, enemy multipliers, and credit yields.
+- ☑ **Auto-Pause & Focus Handling** – Respect user preferences for auto pause, tutorials, and damage number visibility across state transitions.
 
 ### Content
-- Commission or produce HD key art, store capsule imagery, and promotional motion clips.
-- Translate UI strings into at least three target languages (FR, ES, JP) to validate localization pipeline.
-- Conduct two rounds of external playtests focused on retention of the meta-progression loop and accessibility feedback.
+- ☑ Authored achievement deck art direction guidelines and menu theming notes for future artists.
+- ☑ Refreshed documentation to highlight the AAA GUI, achievement system, and meta analytics delivered this quarter.
+- ☑ Logged QA acceptance criteria for the new menus, settings, and persistence routines.
 
 ## Q0 – Prototype Mega Update (Delivered)
 

@@ -13,6 +13,8 @@ Descent is a top-down 2D roguelite focused on deep build permutations and rapid-
 - **Support Systems & Combo Economy** – Maintain kill chains to unlock combo tiers, power drones, amplify damage, and chase higher loot odds.
 - **Dive Lab Meta-Progression** – Bank Aether between dives to unlock a broadened set of permanent stat upgrades (shield plating, drop rates, relic archives) per diver, encouraging mastery-driven grinding across hundreds of runs.
 - **Replay-Ready Telemetry** – Session stats track stage clears, damage dealt, damage taken, and post-run Aether earnings to reinforce mastery.
+- **AAA Hangar & Settings Console** – A cinematic hub with palette previews, persistent sliders/toggles for accessibility, audio balance, color profiles, and difficulty presets.
+- **Achievement Deck & Toasts** – Ten achievement tracks with Aether rewards, run telemetry, and cross-scene notification banners keep long-term goals front-and-center.
 
 ## Installation
 
@@ -42,7 +44,8 @@ Descent is a top-down 2D roguelite focused on deep build permutations and rapid-
 | `Q` | Trigger diver signature ability |
 | `U` / `Tab` | Open the Dive Lab upgrades menu |
 | `Enter` / `Space` | Confirm selection or restart after defeat |
-| `Esc` / Window close | Quit |
+| `Esc` | Pause menu (in-run) / back out of menus |
+| `Alt+F4` / Window close | Quit |
 
 ## Gameplay Loop
 
@@ -60,6 +63,7 @@ Descent is a top-down 2D roguelite focused on deep build permutations and rapid-
 ```
 src/descent/
 ├── abilities.py            # Signature ability catalog and cooldown data
+├── achievements.py         # Achievement definitions, thresholds, and reward helpers
 ├── art.py                  # Pixel glyph definitions and tint helpers
 ├── character_data.py       # Playable diver roster and stat blocks
 ├── constants.py            # Screen dimensions, color palette, and layering
@@ -79,22 +83,27 @@ descent/
 
 Additional design documentation remains in the `docs/` directory for reference and future iteration.
 
-## Roadmap
+## Roadmap Snapshot
 
-### Q1 Goals – Deepen Core Loop
-- Expand arenas with modular room tiles, turret sockets, and reactive hazards to diversify movement puzzles.
-- Prototype elite enemy variants with affix-style modifiers (Shielded, Spore Host, Overcharged) that synergize with weapon keywords.
-- Ship first-pass sound design using open-licensed sfx beds and an adaptive soundtrack stem system.
+### ✅ Q1 – Hangar Uplift
+- Delivered the cinematic hangar menu, contextual stats, and palette previews so players land in an AAA-quality lobby.
+- Shipped the command console settings suite (audio sliders, palette swaps, accessibility toggles, difficulty presets) with persistence upgrades.
+- Authored documentation and copywriting to explain the new menu flow and customization features.
 
-### Q2 Goals – Broaden Meta & Progression
-- Layer in diver-specific questlines that unlock ultimate abilities and cosmetic suits after milestone achievements.
-- Introduce a relic forge that consumes duplicate weapons to roll persistent relic perks, increasing long-term grind appeal.
-- Stand up weekly challenge dives with seeded permutations, leaderboard telemetry, and rotating mutators.
+### ✅ Q2 – Meta Progression & Achievements
+- Extended the save schema with statistics tracking, difficulty-aware reward tuning, and an achievement catalogue.
+- Added the Achievement Deck UI, toast notification pipeline, and credit payout loop to reinforce grind-friendly goals.
+- Refined Dive Lab UI to surface unlock status, new rewards, and roadmap milestones.
 
-### Q3 Goals – Productionization
-- Integrate online stat-sync/backups for the Dive Lab save file alongside configurable cloud paths.
-- Build a tutorialized onboarding experience with ghost replays that teach dodge timing and pickup prioritization.
-- Target Steam Deck certification with revised input prompts, haptics, and performance budgets.
+### ✅ Q3 – Live Ops Readiness
+- Implemented a pause/abort flow with dimmed HUD, settings access mid-run, and notification persistence.
+- Tuned difficulty presets (Story, Normal, Veteran, Apocalypse) affecting spawn pacing, enemy scaling, and payout multipliers.
+- Hardened auto-pause, tutorial prompts, and damage-number preferences across state transitions for marathon sessions.
+
+### ☐ Q4 – Systems Expansion & Live Ops Prep
+- Ability mastery tracks, event variant decks, and relic synergy matrices.
+- Expanded narrative/audio content plus localized UI strings.
+- External playtesting cadence with analytics export and balancing telemetry.
 
 Enjoy diving the Descent and exploring the countless permutations! ⚔️
 
