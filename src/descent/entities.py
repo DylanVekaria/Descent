@@ -13,11 +13,17 @@ from .weapon import WeaponInstance
 
 
 class Player(pygame.sprite.Sprite):
-    def __init__(self, character: CharacterProfile, weapon: WeaponInstance, position: pygame.Vector2):
+    def __init__(
+        self,
+        character: CharacterProfile,
+        weapon: WeaponInstance,
+        position: pygame.Vector2,
+        upgraded_stats: dict[str, float] | None = None,
+    ):
         super().__init__()
         self.character = character
         self.weapon = weapon
-        self.stats = character.stats.copy()
+        self.stats = (upgraded_stats or character.stats).copy()
         self.max_hp = int(self.stats["max_hp"])
         self.hp = float(self.max_hp)
         self.speed = self.stats["speed"]

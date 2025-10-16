@@ -11,6 +11,15 @@ from .character_data import CHARACTERS, CharacterProfile
 from .constants import RUN_COLORS, SCREEN_HEIGHT, SCREEN_WIDTH, TARGET_FPS
 from .enemy_data import ENEMIES, STAGE_MODIFIERS
 from .entities import Enemy, Pickup, Player, Projectile
+from .meta import (
+    UPGRADE_DEFINITIONS,
+    apply_upgrades,
+    award_credits,
+    can_purchase_upgrade,
+    load_progress,
+    purchase_upgrade,
+    upgrade_summary,
+)
 from .weapon import WeaponInstance
 from .weapon_data import WEAPON_CATALOG, WeaponProfile, random_weapon
 
@@ -35,6 +44,12 @@ class Game:
 
         self.characters: List[CharacterProfile] = CHARACTERS
         self.character_index = 0
+        self.progress = load_progress(self.characters)
+        self.meta_character_index = 0
+        self.meta_category_index = 0
+        self.meta_categories = list(UPGRADE_DEFINITIONS.keys())
+        self.meta_message = ""
+        self.meta_message_timer = 0.0
         self.selected_character: Optional[CharacterProfile] = None
         self.state = "character_select"
         self.running = True
@@ -52,6 +67,8 @@ class Game:
         self.total_damage_dealt = 0.0
         self.total_damage_taken = 0.0
         self.pickup_cooldown = 0.0
+        self.active_meta_levels: Optional[dict[str, int]] = None
+        self.last_reward = 0
 
     def run(self) -> None:
         while self.running:
@@ -73,11 +90,30 @@ class Game:
                         self.character_index = (self.character_index - 1) % len(self.characters)
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         self.start_run(self.characters[self.character_index])
+                    elif event.key in (pygame.K_u, pygame.K_TAB):
+                        self.state = "meta"
+                        self.meta_character_index = self.character_index
+                elif self.state == "meta":
+                    if event.key in (pygame.K_ESCAPE, pygame.K_TAB):
+                        self.state = "character_select"
+                    elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                        self.meta_character_index = (self.meta_character_index + 1) % len(self.characters)
+                    elif event.key in (pygame.K_LEFT, pygame.K_a):
+                        self.meta_character_index = (self.meta_character_index - 1) % len(self.characters)
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        self.meta_category_index = (self.meta_category_index + 1) % len(self.meta_categories)
+                    elif event.key in (pygame.K_UP, pygame.K_w):
+                        self.meta_category_index = (self.meta_category_index - 1) % len(self.meta_categories)
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        self.purchase_selected_upgrade()
                 elif self.state == "game_over" and event.key in (pygame.K_RETURN, pygame.K_SPACE):
                     self.reset_to_select()
 
     def update(self, dt: float) -> None:
-        if self.state == "character_select":
+        if self.meta_message_timer > 0:
+            self.meta_message_timer = max(0.0, self.meta_message_timer - dt)
+
+        if self.state in {"character_select", "meta"}:
             return
 
         if self.state == "running" and self.player:
@@ -176,6 +212,8 @@ class Game:
             if self.player:
                 self.screen.blit(self.player.image, self.player.rect)
             self.draw_ui()
+        elif self.state == "meta":
+            self.draw_meta_progression()
         elif self.state == "game_over":
             self.draw_arena()
             self.draw_game_over()
@@ -199,6 +237,8 @@ class Game:
 
         prompt = self.font_small.render("←/→ to browse, Enter to deploy", True, (200, 200, 200))
         self.screen.blit(prompt, prompt.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 80)))
+        upgrade_prompt = self.font_small.render("Press U/Tab for Dive Lab Upgrades", True, RUN_COLORS["ui_accent"])
+        self.screen.blit(upgrade_prompt, upgrade_prompt.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50)))
 
     def draw_arena(self) -> None:
         floor_color = RUN_COLORS["floor"]
@@ -247,6 +287,14 @@ class Game:
             )
             self.screen.blit(stage_text, (30, 90))
 
+        if self.active_meta_levels:
+            meta_parts = []
+            for key in self.meta_categories:
+                level = self.active_meta_levels.get(key, 0)
+                meta_parts.append(f"{key[:3].title()} {level}")
+            meta_text = self.font_small.render("Meta " + "  ".join(meta_parts), True, (180, 180, 180))
+            self.screen.blit(meta_text, (30, 120))
+
         if pygame.sprite.spritecollideany(self.player, self.pickups):
             prompt = self.font_small.render("Press E to attune new weapon", True, RUN_COLORS["ui_accent"])
             self.screen.blit(prompt, prompt.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 60)))
@@ -266,14 +314,27 @@ class Game:
         for i, line in enumerate(stats_lines):
             stat_text = self.font_medium.render(line, True, (230, 230, 230))
             self.screen.blit(stat_text, stat_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 40 + i * 36)))
+        reward_line = f"Aether stored: +{self.last_reward} (Total {self.progress.credits})"
+        reward_text = self.font_small.render(reward_line, True, RUN_COLORS["loot"])
+        self.screen.blit(reward_text, reward_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 200)))
         prompt = self.font_small.render("Press Enter to recalibrate", True, (220, 220, 220))
         self.screen.blit(prompt, prompt.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 80)))
 
     def start_run(self, character: CharacterProfile) -> None:
         self.selected_character = character
         self.weapon_profile = random_weapon()
-        self.weapon_instance = WeaponInstance(self.weapon_profile, character.stats["damage"], character.stats["focus"])
-        self.player = Player(character, self.weapon_instance, pygame.Vector2(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
+        upgraded_stats = apply_upgrades(character, self.progress)
+        self.weapon_instance = WeaponInstance(
+            self.weapon_profile,
+            upgraded_stats.get("damage", character.stats["damage"]),
+            upgraded_stats.get("focus", character.stats["focus"]),
+        )
+        self.player = Player(
+            character,
+            self.weapon_instance,
+            pygame.Vector2(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2),
+            upgraded_stats=upgraded_stats,
+        )
         self.player_group = pygame.sprite.Group(self.player)
         self.projectiles = pygame.sprite.Group()
         self.enemies = pygame.sprite.Group()
@@ -284,6 +345,8 @@ class Game:
         self.total_damage_dealt = 0.0
         self.total_damage_taken = 0.0
         self.state = "running"
+        self.active_meta_levels = upgrade_summary(character, self.progress)
+        self.last_reward = 0
         self.spawn_wave()
 
     def spawn_wave(self) -> None:
@@ -335,6 +398,14 @@ class Game:
         self.player.weapon = self.weapon_instance
 
     def trigger_game_over(self) -> None:
+        reward = int(
+            self.kills * 3
+            + (self.wave_state.stage if self.wave_state else 0) * 40
+            + self.total_damage_dealt * 0.02
+        )
+        reward = max(25, reward)
+        self.last_reward = reward
+        award_credits(self.progress, reward)
         self.state = "game_over"
 
     def reset_to_select(self) -> None:
@@ -344,6 +415,74 @@ class Game:
         self.enemies.empty()
         self.pickups.empty()
         self.wave_state = None
+        self.active_meta_levels = None
+
+    def purchase_selected_upgrade(self) -> None:
+        character = self.characters[self.meta_character_index]
+        upgrade_key = self.meta_categories[self.meta_category_index]
+        success, message = purchase_upgrade(self.progress, character, upgrade_key)
+        if not success and can_purchase_upgrade(self.progress, character, upgrade_key):
+            message = "Unable to purchase upgrade."
+        self.meta_message = message
+        self.meta_message_timer = 2.5
+
+    def draw_meta_progression(self) -> None:
+        self.screen.fill(RUN_COLORS["void"])
+        title = self.font_large.render("Dive Lab Upgrades", True, RUN_COLORS["ui_accent"])
+        self.screen.blit(title, title.get_rect(center=(SCREEN_WIDTH // 2, 90)))
+
+        credits = self.font_medium.render(f"Aether Bank: {self.progress.credits}", True, RUN_COLORS["loot"])
+        self.screen.blit(credits, credits.get_rect(center=(SCREEN_WIDTH // 2, 150)))
+
+        character = self.characters[self.meta_character_index]
+        sprite = player_sprite(character.primary_color, character.secondary_color)
+        self.screen.blit(sprite, sprite.get_rect(center=(SCREEN_WIDTH // 2 - 260, SCREEN_HEIGHT // 2)))
+        name_text = self.font_medium.render(character.name, True, (230, 230, 230))
+        self.screen.blit(name_text, (SCREEN_WIDTH // 2 - 320, SCREEN_HEIGHT // 2 + 160))
+
+        upgrades = upgrade_summary(character, self.progress)
+        for idx, key in enumerate(self.meta_categories):
+            definition = UPGRADE_DEFINITIONS[key]
+            level = upgrades.get(key, 0)
+            cost = definition.cost_for_level(level)
+            is_selected = idx == self.meta_category_index
+            label_color = RUN_COLORS["loot"] if is_selected else (200, 200, 200)
+            bg_rect = pygame.Rect(SCREEN_WIDTH // 2 - 120, 220 + idx * 80, 520, 70)
+            pygame.draw.rect(self.screen, RUN_COLORS["ui_bg"], bg_rect)
+            if is_selected:
+                pygame.draw.rect(self.screen, RUN_COLORS["ui_accent"], bg_rect, 3)
+
+            label = self.font_medium.render(definition.label, True, label_color)
+            self.screen.blit(label, (bg_rect.x + 16, bg_rect.y + 10))
+            level_text = f"Lv. {level}/{definition.max_level}"
+            level_surface = self.font_small.render(level_text, True, (190, 190, 190))
+            self.screen.blit(level_surface, (bg_rect.right - level_surface.get_width() - 18, bg_rect.y + 12))
+
+            if level >= definition.max_level:
+                cost_text = "MAXED"
+                cost_color = RUN_COLORS["player_secondary"]
+            else:
+                cost_text = f"Cost {cost}"
+                affordable = can_purchase_upgrade(self.progress, character, key)
+                cost_color = RUN_COLORS["loot"] if affordable else (160, 160, 160)
+            cost_surface = self.font_small.render(cost_text, True, cost_color)
+            self.screen.blit(cost_surface, (bg_rect.right - cost_surface.get_width() - 18, bg_rect.y + 44))
+
+            desc_lines = wrap_text(definition.description, self.font_small, bg_rect.width - 40)
+            for i, line in enumerate(desc_lines[:2]):
+                desc_surface = self.font_small.render(line, True, (180, 180, 180))
+                self.screen.blit(desc_surface, (bg_rect.x + 18, bg_rect.y + 34 + i * 16))
+
+        instructions = self.font_small.render(
+            "←/→ change diver  •  ↑/↓ select upgrade  •  Enter buy  •  Tab exit",
+            True,
+            (200, 200, 200),
+        )
+        self.screen.blit(instructions, instructions.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 50)))
+
+        if self.meta_message and self.meta_message_timer > 0:
+            message_surface = self.font_small.render(self.meta_message, True, RUN_COLORS["loot"])
+            self.screen.blit(message_surface, message_surface.get_rect(center=(SCREEN_WIDTH // 2, 200)))
 
 
 def wrap_text(text: str, font: pygame.font.Font, max_width: int) -> List[str]:
